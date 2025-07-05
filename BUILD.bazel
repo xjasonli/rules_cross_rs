@@ -1,0 +1,12 @@
+# This file can be used to define targets for the rules_cross_rs module itself.
+# For now, it can remain empty.
+
+# This file makes the public API of the rules_cross_rs module visible to other packages.
+
+package(default_visibility = ["//visibility:public"])
+
+# Allow load() from other packages.
+exports_files([
+    # Main implementation with all functionality
+    "rules.bzl",
+]) 

@@ -1,0 +1,18 @@
+"""Bazel module for cross-compilation toolchain configuration from cross.rs."""
+
+module(
+    name = "rules_cross_rs",
+    version = "0.1.0",
+    bazel_compatibility = [">=7.0.0"],
+    compatibility_level = 1,
+)
+
+bazel_dep(name = "rules_cc", version = "0.1.2")
+bazel_dep(name = "platforms", version = "1.0.0")
+
+# Use the cross_rs extension to create the toolchain repository.
+cross_rs_ext = use_extension("//:rules.bzl", "cross_rs_extension")
+use_repo(cross_rs_ext, "cross_rs_toolchain")
+
+# Automatically register the toolchains for consumers of this module.
+register_toolchains("@cross_rs_toolchain//:toolchain_definition") 

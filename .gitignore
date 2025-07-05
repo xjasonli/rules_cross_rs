@@ -1,0 +1,19 @@
+# Bazel
+bazel-*
+MODULE.bazel.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.log
