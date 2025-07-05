@@ -30,7 +30,7 @@ In your `MODULE.bazel`:
 ```bazel
 module(name = "my_project")
 
-bazel_dep(name = "rules_cross_rs", version = "1.0.0")
+bazel_dep(name = "rules_cross_rs", version = "0.1.0")
 ```
 
 ### 2. Define Platform Targets
