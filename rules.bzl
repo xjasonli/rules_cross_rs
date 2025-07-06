@@ -10,6 +10,7 @@ Key features:
 3. Robust error handling and validation
 4. Comprehensive tool discovery for various cross-compilation scenarios
 5. Modern architecture inspired by apple_support and rules_android_ndk
+6. Self-adaptive behavior - only activates when CROSS_TOOLCHAIN_PREFIX is defined
 """
 
 load("@rules_cc//cc:defs.bzl", "cc_common")
@@ -509,7 +510,7 @@ def _cross_rs_toolchain_config_impl(ctx):
             ],
         ),
     )
-    
+
     # Create toolchain config
     return cc_common.create_cc_toolchain_config_info(
         ctx = ctx,
@@ -543,7 +544,7 @@ cross_rs_toolchain_config = rule(
         "builtin_include_directories": attr.string_list(),
     },
     provides = [CcToolchainConfigInfo],
-)
+) 
 
 # ==============================================================================
 # Repository Rule
@@ -598,13 +599,40 @@ toolchain(
 )
 '''
 
+_STUB_BUILD_TEMPLATE = '''# Stub repository for cross_rs_toolchain when not in cross-rs environment
+# This allows the module to be loaded without errors when TARGET or CROSS_TOOLCHAIN_PREFIX are unset
+# Note: Empty string for CROSS_TOOLCHAIN_PREFIX is valid and means native compilation
+
+package(default_visibility = ["//visibility:public"])
+
+filegroup(name = "empty")
+
+# Stub toolchain that will never be selected due to impossible constraints
+toolchain(
+    name = "toolchain_definition",
+    toolchain = ":empty",
+    toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+    exec_compatible_with = [
+        "@platforms//os:none",  # Impossible constraint
+    ],
+    target_compatible_with = [
+        "@platforms//os:none",  # Impossible constraint
+    ],
+)
+'''
+
 def _cross_rs_toolchain_repository_impl(repository_ctx):
     """Repository rule implementation for cross-rs toolchain."""
     
     # Get target triple from environment
     target_triple = repository_ctx.os.environ.get("TARGET")
-    if not target_triple:
-        fail("TARGET environment variable must be set when using cross-rs toolchain")
+    cross_toolchain_prefix = repository_ctx.os.environ.get("CROSS_TOOLCHAIN_PREFIX")
+    
+    # Only create stub repository if environment variables are completely unset
+    # Empty string is valid for CROSS_TOOLCHAIN_PREFIX (means no prefix for native compilation)
+    if target_triple == None or cross_toolchain_prefix == None:
+        repository_ctx.file("BUILD.bazel", _STUB_BUILD_TEMPLATE)
+        return
     
     # Detect tool paths
     tool_paths = _detect_tool_paths(repository_ctx, target_triple)
@@ -652,13 +680,8 @@ cross_rs_toolchain_repository = repository_rule(
 def _cross_rs_extension_impl(module_ctx):
     """Module extension implementation for cross-rs toolchain."""
     
-    # Only create toolchain if we're in a cross-rs environment
-    target_triple = module_ctx.os.environ.get("TARGET")
-    if not target_triple:
-        # Not in cross-rs environment, skip toolchain creation
-        return
-    
-    # Create toolchain repository
+    # Always create the repository, but it will be a stub if not in cross-rs environment
+    # This ensures use_repo() in MODULE.bazel always succeeds
     cross_rs_toolchain_repository(
         name = "cross_rs_toolchain",
     )

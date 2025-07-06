@@ -12,7 +12,9 @@ bazel_dep(name = "platforms", version = "1.0.0")
 
 # Use the cross_rs extension to create the toolchain repository.
 cross_rs_ext = use_extension("//:rules.bzl", "cross_rs_extension")
+
+# Always use the repository - it will be a stub if not in cross-rs environment
 use_repo(cross_rs_ext, "cross_rs_toolchain")
 
-# Automatically register the toolchains for consumers of this module.
+# Register the toolchain - stub toolchain has impossible constraints and won't interfere
 register_toolchains("@cross_rs_toolchain//:toolchain_definition") 

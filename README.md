@@ -13,13 +13,24 @@ When `cross-rs` provides a pre-configured container environment with specific C+
 ## Features
 
 - **Zero Configuration**: Automatically detects and configures C++ toolchains from `cross-rs` environment variables
+- **Self-Adaptive**: Only activates when `CROSS_TOOLCHAIN_PREFIX` is defined, allowing safe inclusion in any project
 - **Cross-rs Compliant**: Properly handles `CROSS_TOOLCHAIN_PREFIX`, `CROSS_TOOLCHAIN_SUFFIX`, and `TARGET` environment variables
 - **Comprehensive Support**: Works with all major cross-compilation scenarios:
-  - Native compilation
+  - Native compilation (no interference when `CROSS_TOOLCHAIN_PREFIX` is unset)
   - Standard cross-compilation (ARM, x86, etc.)
   - Emscripten WebAssembly
   - Windows MinGW
 - **Modern Bazel Integration**: Uses Bzlmod and follows official Bazel toolchain configuration practices
+
+## Adaptive Behavior
+
+The module automatically adapts to your environment:
+
+- **Cross-compilation mode**: When both `TARGET` and `CROSS_TOOLCHAIN_PREFIX` are set (including empty string), creates and registers a cross-compilation toolchain
+- **Native mode**: When `TARGET` or `CROSS_TOOLCHAIN_PREFIX` are completely unset, creates a stub toolchain that won't interfere with native compilation
+- **Safe inclusion**: Can be safely included in any project without breaking native builds
+
+**Important**: Empty string (`""`) for `CROSS_TOOLCHAIN_PREFIX` is valid and means native compilation with no prefix. Only completely unset variables trigger stub mode.
 
 ## Quick Start
 
@@ -86,25 +97,34 @@ fn main() {
 
 `rules_cross_rs` uses Bazel's module extension mechanism to:
 
-1. **Detect Environment**: Reads `TARGET`, `CROSS_TOOLCHAIN_PREFIX`, and `CROSS_TOOLCHAIN_SUFFIX` from the `cross-rs` environment
-2.  **Discover Tools**: Locates cross-compilation tools (gcc, g++, ar, ld, etc.) in PATH
-3.  **Generate Toolchain**: Creates a complete `cc_toolchain` configuration with proper flags and include paths
-4.  **Auto-Register**: Automatically registers the toolchain for Bazel's platform resolution
+1. **Detect Environment**: Checks for `TARGET` and `CROSS_TOOLCHAIN_PREFIX` environment variables
+2. **Adaptive Response**: 
+   - If `CROSS_TOOLCHAIN_PREFIX` is set: Creates a full cross-compilation toolchain
+   - If `CROSS_TOOLCHAIN_PREFIX` is not set: Creates a stub toolchain that won't interfere
+3. **Discover Tools**: Locates cross-compilation tools (gcc, g++, ar, ld, etc.) in PATH
+4. **Generate Toolchain**: Creates a complete `cc_toolchain` configuration with proper flags and include paths
+5. **Auto-Register**: Automatically registers the toolchain for Bazel's platform resolution
 
 ## Cross-rs Environment Variables
 
-| Variable | Purpose | Example |
-|----------|---------|---------|
-| `TARGET` | Target triple | `aarch64-unknown-linux-gnu` |
-| `CROSS_TOOLCHAIN_PREFIX` | Tool prefix | `aarch64-linux-gnu-` |
-| `CROSS_TOOLCHAIN_SUFFIX` | Tool suffix | `-posix` |
+| Variable | Purpose | Example | Required | Notes |
+|----------|---------|---------|----------|-------|
+| `TARGET` | Target triple | `aarch64-unknown-linux-gnu` | Yes | Must be set for activation |
+| `CROSS_TOOLCHAIN_PREFIX` | Tool prefix | `aarch64-linux-gnu-` | Yes | Empty string `""` is valid for native compilation |
+| `CROSS_TOOLCHAIN_SUFFIX` | Tool suffix | `-posix` | No | Optional suffix for tools |
 
 ## Supported Scenarios
 
-### Native Compilation
+### Native Compilation (No Interference)
+```bash
+# No cross-rs environment variables set (both unset)
+# Module creates stub toolchain, native compilation works normally
+```
+
+### Native Compilation with cross-rs
 ```bash
 TARGET=x86_64-unknown-linux-gnu
-CROSS_TOOLCHAIN_PREFIX=""
+CROSS_TOOLCHAIN_PREFIX=""  # Empty string means no prefix
 ```
 
 ### Standard Cross-compilation
