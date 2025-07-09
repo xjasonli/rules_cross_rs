@@ -677,7 +677,7 @@ cross_rs_toolchain_repository = repository_rule(
 # Module Extension
 # ==============================================================================
 
-def _cross_rs_extension_impl(module_ctx):
+def _cross_rs_extension_impl(_):
     """Module extension implementation for cross-rs toolchain."""
     
     # Always create the repository, but it will be a stub if not in cross-rs environment
