@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-09-24
+
+### Fixed
+- Tool discovery falls back per tool when a `CROSS_TOOLCHAIN_SUFFIX`
+  spelling does not exist: cross-rs windows-gnu images declare `-posix`,
+  but only the compilers are installed in that spelling (binutils live
+  under the plain prefixed names), which made the repository rule fail on
+  `ar`/`ld` lookups.
+- Builtin include directory detection now matches what Bazel's include
+  validation compares against: `..` segments of the `-v` search paths are
+  folded, and a dependency-file probe (`g++ -MD` on a tiny TU including
+  representative standard headers) records the symlink-resolved header
+  locations — Debian/Ubuntu cross toolchains symlink the sysroot C headers
+  into `/usr/<triplet>/include`, and gcc's dependency files record the
+  resolved paths while the `-v` search list does not. Previously compiles
+  failed with "absolute path inclusion(s) found".
+- The `-E -v` probe accepts drive-letter paths (`C:/...`) and uses `NUL`
+  instead of `/dev/null` on Windows hosts, so repository rules evaluated
+  under a Windows-hosted Bazel no longer silently drop the include list.
+- Dropped `-g` from the default compile flags: gcc embeds debug info in the
+  objects, which bloats the archives that Rust build scripts pack into
+  crate rlibs (and every downstream binary link re-reads).
+- PE targets (`*-windows-*`) compile with `-Wa,-mbig-obj`: COFF objects cap
+  the section count near 65k, and with `-ffunction-sections` a large C++
+  TU at `-O0` emits several sections per function, making GNU as fail on
+  protobuf's descriptor.cc with "too many sections"/"file too big".
+
 ## [0.2.0] - 2026-09-23
 
 ### Fixed

@@ -255,42 +255,138 @@ def _get_host_exec_constraints(repository_ctx):
     ]
 
 
-def _detect_builtin_include_directories(repository_ctx, gcc_path):
-    """Detect builtin include directories from the toolchain."""
+# Representative standard headers for the dependency-file probe: they walk
+# the gcc-internal directories, the C++ standard library, and the sysroot C
+# headers (Debian/Ubuntu cross toolchains symlink the latter into
+# /usr/<triplet>/include, and gcc's dependency files record the resolved
+# paths while the -v search list does not).
+_PROBE_INCLUDES = """#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <limits>
+#include <string>
+#include <vector>
+"""
+
+def _normalize_path(path):
+    """Canonicalize separators and dot segments of a printed include path.
+
+    gcc prints forward-slash paths with ".." segments (for example
+    /usr/lib/gcc/x86_64-w64-mingw32/13/../../../../include); Bazel would
+    resolve such relative parts against the exec root, so fold them
+    textually.
+    """
+    path = path.replace("\\", "/")
+    absolute = path.startswith("/")
+    parts = [p for p in path.split("/") if p not in ("", ".")]
+    out = []
+    for part in parts:
+        if part == "..":
+            # Never pop a drive-letter or another leading "..".
+            if out and out[-1] != ".." and not out[-1].endswith(":"):
+                out.pop()
+            else:
+                out.append(part)
+        else:
+            out.append(part)
+    result = "/".join(out)
+    if absolute:
+        result = "/" + result
+    return result
+
+def _dirname(path):
+    idx = path.rfind("/")
+    return path[:idx] if idx > 0 else "/"
+
+def _detect_builtin_include_directories(repository_ctx, gcc_path, gxx_path):
+    """Detect builtin include directories from the toolchain.
+
+    Two complementary probes, because gcc's dependency files and Bazel's
+    include validation resolve symlinks while the -v search list does not:
+
+    1. "gcc -E -v": the printed search directories (with .. segments folded).
+    2. A tiny translation unit including representative standard headers,
+       compiled with -MD: the directories of the recorded headers, i.e. the
+       resolved paths include validation will actually compare against.
+    """
     if not gcc_path:
         return []
-    
-    # Run gcc with -E -v to get include search paths
-    result = repository_ctx.execute([
-        gcc_path, 
-        "-E", "-v", "-x", "c++", "/dev/null"
-    ], timeout = 10)
-    
-    if result.return_code != 0:
-        # Could not detect builtin include directories from gcc
-        return []
-    
-    # Parse the output to extract include directories
-    lines = result.stderr.split('\n')
+
     include_dirs = []
-    in_include_section = False
-    
-    for line in lines:
-        line = line.strip()
-        if line == "#include <...> search starts here:":
-            in_include_section = True
-            continue
-        elif line == "End of search list.":
-            in_include_section = False
-            break
-        elif in_include_section and line.startswith('/'):
-            # Remove any trailing annotations like (framework directory)
-            parts = line.split(" ")
-            path = parts[0] if parts else line
-            if path.startswith('/'):
-                include_dirs.append(path)
-    
-    return include_dirs
+
+    # gcc cannot read /dev/null on Windows hosts; the null device is NUL.
+    # os.name is the raw platform name ("windows", "windows 11", "linux"),
+    # so match by prefix.
+    os_name = repository_ctx.os.name.lower()
+    null_input = "NUL" if os_name.startswith("windows") else "/dev/null"
+    result = repository_ctx.execute([
+        gcc_path,
+        "-E", "-v", "-x", "c++", null_input
+    ], timeout = 10)
+
+    if result.return_code != 0:
+        # Could not detect builtin include directories from the -v probe;
+        # fall through to the dependency-file probe. An empty list overall
+        # makes Bazel's include validation reject the C++ standard headers
+        # ("absolute path inclusion(s) found" errors), so a silent probe
+        # failure surfaces quickly at compile time.
+        result = None
+
+    if result != None:
+        # Parse the include search list; accept the /-rooted paths Unix gcc
+        # prints and the drive-letter paths (C:/...) MinGW gcc prints.
+        lines = result.stderr.split('\n')
+        in_include_section = False
+
+        for line in lines:
+            line = line.strip()
+            if line == "#include <...> search starts here:":
+                in_include_section = True
+                continue
+            elif line == "End of search list.":
+                in_include_section = False
+                break
+            elif in_include_section:
+                # Remove any trailing annotations like (framework directory)
+                parts = line.split(" ")
+                path = parts[0] if parts else line
+                path = path.replace("\\", "/")
+                if path.startswith("/") or (len(path) >= 2 and path[1] == ":"):
+                    include_dirs.append(_normalize_path(path))
+
+    # Dependency-file probe: compile a tiny TU and collect the directories
+    # of the headers gcc records, symlink-resolved.
+    if gxx_path:
+        probe_src = "_builtin_include_probe.cc"
+        probe_obj = "_builtin_include_probe.o"
+        probe_deps = "_builtin_include_probe.d"
+        repository_ctx.file(probe_src, _PROBE_INCLUDES)
+        probe = repository_ctx.execute([
+            gxx_path, "-c", probe_src, "-o", probe_obj,
+            "-MD", "-MF", probe_deps,
+        ], timeout = 60)
+        if probe.return_code == 0:
+            deps = repository_ctx.read(probe_deps)
+            for token in deps.replace("\\\n", " ").split(" "):
+                token = token.strip('"')
+                if not token.startswith("/") and not (
+                    len(token) >= 2 and token[1] == ":"
+                ):
+                    continue  # probe targets/sources and continuations
+                include_dirs.append(_normalize_path(_dirname(token)))
+        repository_ctx.delete(probe_src)
+        repository_ctx.delete(probe_obj)
+        repository_ctx.delete(probe_deps)
+
+    # Deduplicate, preserving order.
+    seen = {}
+    unique_dirs = []
+    for d in include_dirs:
+        if d not in seen:
+            seen[d] = True
+            unique_dirs.append(d)
+    return unique_dirs
 
 def _detect_tool_paths(repository_ctx, target_triple):
     """Detect tool paths based on cross-rs environment variables."""
@@ -323,15 +419,31 @@ def _detect_tool_paths(repository_ctx, target_triple):
             "objdump": prefix + "objdump" + suffix,
         }
     
-    # Find tools in PATH - required tools
+    # Find tools in PATH - required tools. Cross-rs images declare
+    # CROSS_TOOLCHAIN_SUFFIX for thread-model variants (e.g. -posix on the
+    # windows-gnu images), but only the compilers are installed in that
+    # spelling; binutils exist under the plain prefixed names, so fall back
+    # per tool.
     tool_paths = {}
     required_tools = ["gcc", "g++", "ar", "ld"]
-    
+
     for tool_type, tool_name in tool_names.items():
-        tool_path = repository_ctx.which(tool_name)
+        candidates = [tool_name]
+        if suffix:
+            for fallback in [prefix + tool_type, tool_type]:
+                if fallback not in candidates:
+                    candidates.append(fallback)
+
+        tool_path = None
+        for candidate in candidates:
+            path = repository_ctx.which(candidate)
+            if path:
+                tool_path = path
+                break
         if not tool_path:
             if tool_type in required_tools:
-                fail("Required tool '{}' not found in PATH for target '{}'".format(tool_name, target_triple))
+                fail("Required tool '{}' not found in PATH for target '{}' (tried {})".format(
+                    tool_name, target_triple, ", ".join(candidates)))
             else:
                 # Use fallback for optional tools
                 if tool_type in ["strip", "nm", "objcopy", "objdump"]:
@@ -375,22 +487,34 @@ def _cross_rs_toolchain_config_impl(ctx):
     # Features configuration - following official Bazel tutorial pattern
     features = []
     
+    # PE/COFF objects cap the section count (~65k); with
+    # -ffunction-sections a large C++ TU at -O0 emits several sections per
+    # function and GNU as fails with "too many sections"/"file too big"
+    # (protobuf's descriptor.cc hits this). The big-obj COFF variant lifts
+    # the limit; the option only exists on PE targets.
+    common_compile_flags = [
+        "-no-canonical-prefixes",
+        "-fdata-sections",
+        "-ffunction-sections",
+        "-fPIC",
+    ]
+    if "windows" in ctx.attr.target_triple:
+        common_compile_flags.append("-Wa,-mbig-obj")
+
     # Default compiler flags feature
     features.append(
         feature(
             name = "default_compile_flags",
             enabled = True,
             flag_sets = [
-                # Common flags for all compile actions
+                # Common flags for all compile actions. No -g: gcc embeds
+                # debug info in the objects, which bloats archives and, for
+                # PE/COFF targets, can exceed the object format's ~2GB
+                # addressing limit on heavily templated translation units
+                # (GNU as then fails with "file too big").
                 flag_set(
                     actions = _ALL_COMPILE_ACTIONS,
-                    flags = [
-                        "-no-canonical-prefixes",
-                        "-fdata-sections",
-                        "-ffunction-sections", 
-                        "-g",
-                        "-fPIC",
-                    ],
+                    flags = common_compile_flags,
                 ),
                 # C++ specific flags
                 flag_set(
@@ -690,7 +814,11 @@ def _cross_rs_toolchain_repository_impl(repository_ctx):
     tool_paths = _detect_tool_paths(repository_ctx, target_triple)
 
     # Detect builtin include directories
-    builtin_include_dirs = _detect_builtin_include_directories(repository_ctx, tool_paths["gcc"])
+    builtin_include_dirs = _detect_builtin_include_directories(
+        repository_ctx,
+        tool_paths["gcc"],
+        tool_paths["g++"],
+    )
 
     # Get platform constraints
     constraints = _get_target_constraints(target_triple)

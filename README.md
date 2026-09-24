@@ -189,6 +189,10 @@ CROSS_TOOLCHAIN_PREFIX="x86_64-w64-mingw32-"
 CROSS_TOOLCHAIN_SUFFIX="-posix"
 ```
 
+Only the compilers are usually installed in the suffixed spelling; binutils
+resolve through a per-tool fallback to the plain prefixed names, so the
+`-posix` suffix above is safe to declare.
+
 ## Architecture
 
 The implementation follows best practices from `rules_android_ndk` and `apple_support`:
@@ -202,8 +206,13 @@ The implementation follows best practices from `rules_android_ndk` and `apple_su
 
 ### Common Issues
 
-1. **Tool not found**: Ensure cross-compilation tools are in PATH
-2. **Include errors**: Verify `gcc -E -v` works in your environment  
+1. **Tool not found**: Ensure cross-compilation tools are in PATH (tool
+   discovery falls back per tool from the prefixed+suffixed name to the
+   prefixed and plain names)
+2. **Include errors**: Builtin include directories are detected with two
+   probes — the `gcc -E -v` search list and a `g++ -MD` dependency-file
+   probe that records symlink-resolved standard header locations; both
+   must be able to run the toolchain on PATH
 3. **Linking errors**: Check that standard libraries are available
 
 ### Debug Information
