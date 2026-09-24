@@ -18,8 +18,12 @@ When `cross-rs` provides a pre-configured container environment with specific C+
 - **Comprehensive Support**: Works with all major cross-compilation scenarios:
   - Native compilation (no interference when `CROSS_TOOLCHAIN_PREFIX` is unset)
   - Standard cross-compilation (ARM, x86, etc.)
+  - Linux musl targets (the cross-rs musl images ship GCC with C++ support)
   - Emscripten WebAssembly
   - Windows MinGW
+- **Host-Adaptive Exec Constraints**: The generated toolchain's execution
+  constraints describe the host it was created on, so aarch64 cross-rs
+  containers (e.g. Apple Silicon) work too
 - **Modern Bazel Integration**: Uses Bzlmod and follows official Bazel toolchain configuration practices
 
 ## Adaptive Behavior
@@ -41,10 +45,35 @@ In your `MODULE.bazel`:
 ```bazel
 module(name = "my_project")
 
-bazel_dep(name = "rules_cross_rs", version = "0.1.0")
+bazel_dep(name = "rules_cross_rs", version = "0.2.0")
 ```
 
-### 2. Define Platform Targets
+### 2. Register the Toolchain From the Root Module
+
+**Required.** Bzlmod ranks toolchains registered by the *root* module above those
+registered by dependencies, and above the auto-configured local toolchain.
+rules_cross_rs' own registration only takes effect as a last-resort candidate,
+which loses whenever the local toolchain also matches the target platform
+(e.g. building `x86_64-unknown-linux-musl` inside an x86_64 glibc cross-rs
+container, where both toolchains match `[cpu:x86_64, os:linux]` — the local
+glibc toolchain would win and silently mis-compile your library).
+
+Registering from the root module fixes the priority and is inert for native
+builds (the extension generates a stub with impossible constraints when
+`CROSS_TOOLCHAIN_PREFIX` is unset, so hosts whose native toolchain already
+matches — including native musl hosts like Alpine — are unaffected):
+
+```bazel
+cross_rs_ext = use_extension("@rules_cross_rs//:rules.bzl", "cross_rs_extension")
+use_repo(cross_rs_ext, "cross_rs_toolchain")
+register_toolchains("@cross_rs_toolchain//:toolchain_definition")
+```
+
+When your root module registers other toolchains that may match the same
+platforms (e.g. an Android NDK toolchain), register those **first** if they
+should keep winning on those platforms.
+
+### 3. Define Platform Targets
 
 In your `BUILD.bazel`:
 
@@ -103,7 +132,9 @@ fn main() {
    - If `CROSS_TOOLCHAIN_PREFIX` is not set: Creates a stub toolchain that won't interfere
 3. **Discover Tools**: Locates cross-compilation tools (gcc, g++, ar, ld, etc.) in PATH
 4. **Generate Toolchain**: Creates a complete `cc_toolchain` configuration with proper flags and include paths
-5. **Auto-Register**: Automatically registers the toolchain for Bazel's platform resolution
+5. **Auto-Register**: Registers the toolchain for Bazel's platform resolution — note that
+   under Bzlmod only root-module registrations take priority, so consumers must also
+   register the toolchain from their root `MODULE.bazel` (see Quick Start step 2)
 
 ## Cross-rs Environment Variables
 
@@ -132,6 +163,18 @@ CROSS_TOOLCHAIN_PREFIX=""  # Empty string means no prefix
 TARGET=aarch64-unknown-linux-gnu
 CROSS_TOOLCHAIN_PREFIX="aarch64-linux-gnu-"
 ```
+
+### Linux musl
+```bash
+TARGET=x86_64-unknown-linux-musl
+CROSS_TOOLCHAIN_PREFIX="x86_64-linux-musl-"
+```
+
+The cross-rs `*-musl` images build their toolchain with
+[musl-cross-make](https://github.com/richfelker/musl-cross-make)
+(`--enable-languages=c,c++`), so `$(prefix)g++` and a static `libstdc++.a`
+are available. Native musl hosts (e.g. Alpine) don't need this module at
+all: their auto-configured local toolchain already targets musl.
 
 ### Emscripten WebAssembly
 ```bash

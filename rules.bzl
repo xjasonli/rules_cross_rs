@@ -204,6 +204,57 @@ def _get_target_constraints(target_triple):
     
     return [cpu_constraint, os_constraint]
 
+def _get_host_exec_constraints(repository_ctx):
+    """Map the host Bazel is running on to @platforms exec constraints.
+
+    The tools referenced by the generated toolchain only run on the machine
+    this repository rule executes on (cross-rs containers expose them through
+    PATH). The exec constraints must therefore describe that host, not a
+    hardcoded linux/x86_64: an aarch64 cross-rs container (e.g. on Apple
+    Silicon) would otherwise never match this toolchain and fall back to the
+    native one. Returns an empty list when the host cannot be mapped; a
+    toolchain without exec constraints matches any execution platform, which
+    is acceptable because the repository is generated per-host anyway.
+    """
+    os_name = repository_ctx.os.name
+    arch = repository_ctx.os.arch
+
+    os_map = {
+        "linux": "linux",
+        "mac os x": "osx",
+        "darwin": "osx",
+        "windows": "windows",
+        "freebsd": "freebsd",
+        "openbsd": "openbsd",
+        "netbsd": "netbsd",
+    }
+    arch_map = {
+        "x86_64": "x86_64",
+        "amd64": "x86_64",
+        "aarch64": "aarch64",
+        "arm64": "aarch64",
+        "i386": "x86_32",
+        "i486": "x86_32",
+        "i586": "x86_32",
+        "i686": "x86_32",
+        "armv7l": "armv7",
+        "armv8l": "armv7",
+        "ppc64le": "ppc64le",
+        "s390x": "s390x",
+        "riscv64": "riscv64",
+    }
+
+    os_constraint = os_map.get(os_name)
+    arch_constraint = arch_map.get(arch)
+    if not os_constraint or not arch_constraint:
+        return []
+
+    return [
+        "@platforms//os:" + os_constraint,
+        "@platforms//cpu:" + arch_constraint,
+    ]
+
+
 def _detect_builtin_include_directories(repository_ctx, gcc_path):
     """Detect builtin include directories from the toolchain."""
     if not gcc_path:
@@ -512,6 +563,10 @@ def _cross_rs_toolchain_config_impl(ctx):
     )
 
     # Create toolchain config
+    # Derive the libc name from the target triple so rules that select on
+    # libc type (e.g. via @bazel_tools//tools/cpp:libc) see "musl" for
+    # *-musl targets instead of a hardcoded "glibc".
+    target_libc = "musl" if "musl" in ctx.attr.target_triple else "glibc"
     return cc_common.create_cc_toolchain_config_info(
         ctx = ctx,
         features = features,
@@ -519,7 +574,7 @@ def _cross_rs_toolchain_config_impl(ctx):
         host_system_name = "local",
         target_system_name = ctx.attr.target_triple,
         target_cpu = ctx.attr.target_triple.split("-")[0],
-        target_libc = "glibc",  # This could be made configurable
+        target_libc = target_libc,
         compiler = "gcc",
         abi_version = "unknown",
         abi_libc_version = "unknown",
@@ -591,10 +646,7 @@ toolchain(
     name = "toolchain_definition",
     toolchain = ":toolchain",
     toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
-    exec_compatible_with = [
-        "@platforms//os:linux",
-        "@platforms//cpu:x86_64",
-    ],
+    exec_compatible_with = {exec_constraints},
     target_compatible_with = {constraints},
 )
 '''
@@ -636,13 +688,14 @@ def _cross_rs_toolchain_repository_impl(repository_ctx):
     
     # Detect tool paths
     tool_paths = _detect_tool_paths(repository_ctx, target_triple)
-    
+
     # Detect builtin include directories
     builtin_include_dirs = _detect_builtin_include_directories(repository_ctx, tool_paths["gcc"])
-    
+
     # Get platform constraints
     constraints = _get_target_constraints(target_triple)
-    
+    exec_constraints = _get_host_exec_constraints(repository_ctx)
+
     # Generate BUILD file from template
     build_content = _BUILD_TEMPLATE.format(
         target_triple = target_triple,
@@ -658,6 +711,7 @@ def _cross_rs_toolchain_repository_impl(repository_ctx):
         dwp_path = tool_paths["dwp"],
         builtin_include_directories = repr(builtin_include_dirs),
         constraints = repr(constraints),
+        exec_constraints = repr(exec_constraints),
     )
     
     repository_ctx.file("BUILD.bazel", build_content)

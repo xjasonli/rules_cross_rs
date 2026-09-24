@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-09-23
+
+### Fixed
+- Report `target_libc = "musl"` for `*-musl` target triples instead of a
+  hardcoded `"glibc"`, so rules selecting on libc type see the right value.
+- Derive the generated toolchain's `exec_compatible_with` constraints from
+  the host Bazel runs on instead of hardcoding `linux/x86_64`. aarch64
+  cross-rs containers (e.g. Apple Silicon) can now select the toolchain.
+
+### Changed
+- Documented that consumers must register the toolchain from their root
+  `MODULE.bazel`: Bzlmod ranks root-module registrations above non-root ones
+  and the auto-configured local toolchain, which is required for targets
+  where the cross toolchain and the local toolchain match the same platform
+  (e.g. `x86_64-unknown-linux-musl` built inside an x86_64 glibc container).
+  Native builds are unaffected — the stub toolchain never matches.
+
 ## [0.1.0] - 2025-07-05
 
 ### Added
